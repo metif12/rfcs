@@ -1,9 +1,7 @@
 - Topic Name: `vpm_versioning`
 - Start Date: 2026-10-03
-- RFC PR: [vlang/rfcs#00000](https://github.com/vlang/rfcs/pull/00000)
-  <!-- replace 000- with this PR's number once opened -->
-- V Issue: [vlang/v#00000](https://github.com/vlang/v/issues/00000)
-  <!-- see the companion issue linked from the PR description -->
+- RFC PR: [vlang/rfcs#32](https://github.com/vlang/rfcs/pull/32)
+- V Issue: [vlang/v#29360](https://github.com/vlang/v/issues/29360)
 
 # Summary
 
