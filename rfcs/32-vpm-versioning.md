@@ -135,9 +135,9 @@ first: #29250 and its implementation give us a place to record a resolution and 
 once the recording mechanism exists, because the two can be argued about
 concretely.
 
-There is also an unused asset. `vlib/semver/range.v` is a complete node-semver
-range engine — x-ranges, `~`, `^`, hyphen ranges, `||` sets — sitting behind a
-single public entry point:
+There is also an unused asset, and it is the reason phase 1 looks cheaper than it
+is. `vlib/semver/range.v` is a range engine — x-ranges, `~`, `^`, hyphen ranges,
+`||` sets — sitting behind a single public entry point:
 
 ```v ignore
 // vlib/semver/semver.v:67
@@ -148,8 +148,48 @@ pub fn (ver Version) satisfies(input string) bool {
 
 `vpm/vcs.v:4` imports `semver`, and uses it for one thing: comparing the
 installed git version against `2.36.0` to decide about shallow submodules
-(`vcs.v:29-43`). The range engine is never used. Most of "phase 1" below is
-wiring, not writing.
+(`vcs.v:29-43`). The range engine is never used.
+
+I originally wrote that this made phase 1 "mostly wiring, not writing". **That was
+wrong, and I have since measured it.** `vlib/semver` is not the complete
+node-semver implementation it appears to be: a corpus of 100 cases measured
+against the ranges grammar in
+[npm/node-semver](https://github.com/npm/node-semver) finds **20 divergences**,
+several of them in the core expansion logic rather than at the edges:
+
+- a **partial version is read as an exact pin**. `'1.2'` means `=1.2.0`, not
+  `1.2.x`, because `can_expand` (`range.v:151-154`) only looks for an explicit
+  `x`, `X` or `*`. So `'1.2.9'` does not satisfy `'1.2'`.
+- **`^0.0.3` admits the whole `0.0.x` series.** `expand_caret` (`range.v:179-187`)
+  increments the minor whenever the major is `0`, where node-semver increments
+  the patch.
+- **`0.x` has no ceiling at all.** `expand_xrange` (`range.v:207-218`) returns a
+  bare `>=0.0.0` when the major is `0`.
+- **a hyphen range with a bare-major upper bound does not expand.**
+  `is_missing(ver_major)` is true for `'2.2 - 2'`, so `expand_hyphen` returns
+  `none` and `'2.2 - 2'` matches nothing.
+- **prereleases have no ordering at all.** `compare_lt` never reads the
+  prerelease, so `1.0.0-alpha` is neither `<` nor `>` `1.0.0`, yet both `<=` and
+  `>=` hold — because `Version` overloads only `==` and `<` (`semver.v:72-79`) and
+  the compiler derives the rest. That is an inconsistent relation, and it is why
+  the prerelease problems cannot be fixed in the range layer alone.
+- **there is no prerelease admission check**, so `1.0.0-alpha` satisfies
+  `^1.0.0`, `>=0.9.0` and `*`.
+- **a range with more than two comparators is a parse failure**, and an
+  unparseable range is reported as "does not satisfy". A caller cannot tell a
+  broken constraint from a genuine miss.
+
+Two of those are landmines. `compare_gt`, `compare_ge` and `compare_le` are
+unreachable — nothing calls them — so fixing the ordering means going through
+`<`. And `semver_test.v:41` currently pins the `^0.0.1` divergence as expected
+behaviour, so repairing `expand_caret` breaks an existing test.
+
+The honest version of the claim: the range engine is a real and mostly-right
+implementation of the common forms, and reusing it still beats writing a second
+one. But phase 1 includes repairing it, and a resolver should not be built on it
+until that is done. The corpus test referred to below is the prerequisite, and
+it is deliberately written to make every divergence visible rather than to assert
+that the divergences are correct.
 
 # Guide-level explanation
 
@@ -606,12 +646,20 @@ That is what "reproducible" means.
 Splitting this up is not a formality — it is the main thing that makes it
 reviewable. Each phase is independently useful and independently landable.
 
+**Phase 0 — repair `vlib/semver`.**
+A corpus test against the node-semver ranges grammar now exists and records 20
+divergences. Fixing the ones a resolver would actually hit — partial versions read
+as exact pins, `^0.0.x`, unbounded `0.x`, the bare-major hyphen upper bound,
+prerelease ordering and prerelease admission — and deciding what an unparseable
+range should report instead of a bare `false`. Small in lines, and it is a
+prerequisite rather than an improvement: every later phase picks versions with
+this code.
+
 **Phase 1 — constraints and a resolver, no layout change.**
 Ranges in `v.mod`, the resolver, lock integration, `v why`, version-aware
 `v outdated`, `v update --precise`, `v mod graph`. One version per module,
 exactly as today. This is where the value is, and it needs **no compiler change
-at all** — it is entirely inside `cmd/tools/vpm/` plus using `vlib/semver`
-properly.
+at all** — it is entirely inside `cmd/tools/vpm/` plus phase 0.
 
 **Phase 2 — the manifest additions.**
 `dev_dependencies` (and deleting `module_deps.v`), `dependency_overrides`, `min_v`.
@@ -623,7 +671,7 @@ hardcoded.
 Deliberately last. See the drawback below: it is the only feature here whose cost
 scales with the number of versions you *didn't* pick.
 
-**Phase 1 alone would replace the unchecked ROADMAP line.**
+**Phases 0 and 1 together would replace the unchecked ROADMAP line.**
 
 ### What I am deliberately not proposing here
 
@@ -677,11 +725,15 @@ people script against and file issues about. `v outdated` in particular has to
 answer "why did it *not* update", which is genuinely hard, and getting it subtly
 wrong is worse than not shipping it.
 
-**`vlib/semver` becomes load-bearing and is currently unmaintained.** It carries
-TODOs at `semver.v:55` and `parse.v:16`. Promoting a module nobody has fuzzed
-against real-world version strings to the thing every `v install` depends on is a
-risk that happens *before* any of the nice properties show up. Fuzzing it against
-a corpus of real tags is a prerequisite, not a follow-up.
+**`vlib/semver` becomes load-bearing and it is not ready.** I wrote that fuzzing it
+against a corpus was "a prerequisite, not a follow-up". Doing that is what turned
+up the 20 divergences listed above, so the warning was correct and understated:
+this is the single largest piece of unplanned work in phase 1, and it lands on
+whoever picks it up. Two things make it worse than it looks. `compare_gt`,
+`compare_ge` and `compare_le` are unreachable, so the ordering fix has to go
+through `<` and the desugared `<=`/`>=`. And `semver_test.v:41` pins one of the
+divergences as expected behaviour, so the repair has to change an existing
+assertion — which is a discussion about intent, not a bugfix.
 
 **This does not fix name squatting.** V has no namespace isolation;
 `normalize_mod_path` (`common.v:229-231`) lowercases and maps `-` to `_`, so
@@ -922,13 +974,21 @@ disagree with one, say so — that is the part I want feedback on.
 2. **Adopt node-semver's full grammar, including `||` and hyphen ranges.** This
    cuts against intuition — those two forms are what users get wrong most, and
    Cargo ships neither. But rejecting them does not reduce work, it *adds* work:
-   `vlib/semver/range.v` already handles them — `||` is
+   `vlib/semver/range.v` already accepts them — `||` is
    `r.comparator_sets.any(it.satisfies(ver))` (`range.v:34-35`) over the sets
    produced by `input.split(comparator_set_sep)` (`range.v:58`), and hyphen ranges
    are `expand_hyphen` (`range.v:189`). A "subset" means writing a second,
-   divergent range parser to reject syntax the first one already handles. Two
-   parsers is worse than one permissive one. **The alternative** is a deliberately
-   small grammar with much better error messages, at the cost of that new parser.
+   divergent range parser to reject syntax the first one already takes. Two
+   parsers is worse than one permissive one.
+
+   The measurement above weakens this argument rather than overturning it. The
+   grammar being *accepted* is not the same as the grammar being *implemented*:
+   `||` only works with a space on each side, and a hyphen range with a bare-major
+   upper bound expands to nothing. So the case is now "repair one parser" instead
+   of "reuse a finished one". That is still the cheaper option, but it is a repair
+   job, and it is an argument I could not have made honestly before measuring.
+   **The alternative** is a deliberately small grammar with much better error
+   messages, at the cost of a new parser.
 
 3. **`dependency_overrides` may force a version, not just redirect a source.**
    Version-forcing is what people actually do when two constraints conflict;
