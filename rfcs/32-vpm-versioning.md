@@ -202,17 +202,21 @@ Module {
 	name: 'myapp'
 	version: '0.3.1'
 	dependencies: [
-		'vsl@^0.1.47'
-		'nedpals.args@>=0.4.0 <0.6.0'
-		'nedpals.orm@~0.2'
-		'markdown@*'
-		'https://github.com/nedpals/v-thing@>=2.1.0'
+		'vsl@^0.1.47',
+		'nedpals.args@>=0.4.0 <0.6.0',
+		'nedpals.orm@~0.2',
+		'markdown@*',
+		'https://github.com/nedpals/v-thing@>=2.1.0',
 	]
 	dev_dependencies: [
-		'assert@~0.2.1'
+		'assert@~0.2.1',
 	]
 }
 ```
+
+Note the trailing commas: `v.mod` requires a separator between array elements, and
+the parser's error for a missing one is `invalid separator`, which is about the
+array syntax rather than about whatever the element was going to say.
 
 What each form means:
 
@@ -323,10 +327,10 @@ last word. Overrides use pnpm-style selectors and only apply from the root:
 Module {
 	dependencies: ['vsl@^0.1.47']
 	dependency_overrides: [
-		'vsl: 0.1.60'                // force this version everywhere
-		'vsl>c: 1.0.2'               // force it only where vsl asks for c
-		'legacy@v3>risky: -'         // delete that edge entirely
-		'somepkg@>=2: 2.4.1'         // only for constraints that already allow it
+		'vsl: 0.1.60', // force this version everywhere
+		'vsl>c: 1.0.2', // force it only where vsl asks for c
+		'legacy@v3>risky: -', // delete that edge entirely
+		'somepkg@>=2: 2.4.1', // only for constraints that already allow it
 	]
 }
 ```
