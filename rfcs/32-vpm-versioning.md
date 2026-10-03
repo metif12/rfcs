@@ -67,7 +67,7 @@ same commit, the answer is "not a version install". The code says so itself:
 ```
 
 **Dependencies carry no constraint.** `dependencies` is `[]string`
-(`vlib/v/vmod/parser.v:32`) holding bare names or URLs. The parser accepts a
+(`vlib/v/vmod/parser.v:33`) holding bare names or URLs. The parser accepts a
 `@ref` because `parse.v:233-238` feeds each entry straight back into
 `parse_module`, which does the same `rsplit_once('@')`. That path works and is
 completely undocumented and untested.
@@ -81,7 +81,7 @@ early return — a dependency cycle is caught by a test watchdog with a two-minu
 timeout (`dependency_test.v:80-93`), not by a graph check. `v update` re-resolves
 differently, with a flat one-level `resolve_dependencies` (`common.v:555-566`).
 
-**`v outdated` cannot see versions.** `outdated.v:50-69` compares
+**`v outdated` cannot see versions.** `outdated.v:50-70` compares
 `rev-parse @` against `rev-parse @{u}`. That is a branch-head comparison. A
 tagged release is invisible to it.
 
@@ -391,22 +391,51 @@ mandatory; see the unresolved questions for whether we should.
 
 ## Syntax, and why it looks like this
 
-The `@` separator stays. `parse.v:89` already splits a dependency string on its
+The `@` separator stays. `parse.v:96` already splits a dependency string on its
 last `@`, and `'vsl@v0.1.47'` already means something today. Changing the syntax
 would invalidate the `v.mod` of every published module in exchange for nothing.
 What changes is that the right-hand side may now be a range instead of a ref.
 
 Everything new goes into keys the parser already tolerates.
-`vlib/v/vmod/parser.v:254-262` puts any unrecognised field into
+`vlib/v/vmod/parser.v:285-293` puts any unrecognised field into
 `mn.unknown`, so `dev_dependencies`, `dependency_overrides`, `retracted`, and
 `min_v` are all readable by a new vpm and invisible to an old one. An old vpm
 that meets a `v.mod` using them will simply not install the extras — which is the
 right failure mode, and strictly better than a parse error.
 
-Note the constraint on field values (`parser.v:219-221`): a field must be a
-string or an array of strings. So overrides are flat strings with a mini
-selector syntax rather than a nested map. A nested map would need a parser
-change, which would need every `v.mod` in the wild re-checked against it.
+### Why not a `name: version` map, when the parser now accepts one
+
+As of #29249 the parser *does* accept a map for `dependencies` — the legacy form:
+
+```v ignore
+Module {
+	dependencies: [
+		markdown: '0.2.4'
+	]
+}
+```
+
+It also **discards the value**, with a comment that says so outright:
+
+```v ignore
+// vlib/v/vmod/parser.v:198
+// Manifest.dependencies stores names only, so ignore legacy version values.
+```
+
+So `dependencies: [markdown: '0.2.4']` parses to exactly `['markdown']`.
+
+That is worth pausing on, because it is the ecosystem already answering the
+question this RFC asks. A `name: version` map was tried, accepted for
+compatibility, and the version thrown away — `Manifest.dependencies` is
+`[]string` (`parser.v:33`) and stays that way. The natural conclusion is that the
+map is the wrong shape for a constraint, and that the constraint belongs in the
+name string, where it survives parsing and where `parse.v:96` already knows how
+to split it off.
+
+Note also that only `dependencies` accepts the map form; every other field must
+still be a string or an array of strings (`parser.v:251`). So `dependency_overrides`
+would need a parser change to become a nested map regardless. Keeping it as flat
+strings with a selector syntax avoids that.
 
 The full grammar accepted after `@` is node-semver's, which is what
 `vlib/semver/range.v` already implements:
@@ -623,7 +652,7 @@ that "a package manager is a lot of work" — that is true of every proposal eve
 made and is not an argument.
 
 **Making `version` real breaks existing modules.** `version` in `v.mod` is
-currently a free-form string that nothing validates; `parser_test.v:22` round-trips
+currently a free-form string that nothing validates; `parser_test.v:23` round-trips
 `'0.7.7'` and nothing else checks it. Requiring it, and requiring the git tag to
 match it, makes every module with it wrong uninstallable. That needs a migration
 window and a warning phase, and it will generate support load.
@@ -752,7 +781,7 @@ needs artifact hashes.
 ## Why keep the `@` separator
 
 Because it already exists and already works. `'vsl@v0.1.47'` parses today at
-`parse.v:89` and is already half-documented at
+`parse.v:96` and is already half-documented at
 [vlang/v#19709](https://github.com/vlang/v/issues/19709). A new syntax would
 invalidate every published `v.mod` to no end.
 
@@ -760,7 +789,7 @@ invalidate every published `v.mod` to no end.
 
 Everything in phase 1 and 2 works against plain git URLs. `v install
 https://github.com/nedpals/v-thing@^2.1` needs no registry at all, and
-`parse.v:108-170` already handles external URLs by requiring a `v.mod` in them.
+`parse.v:115-177` already handles external URLs by requiring a `v.mod` in them.
 
 That is a real strength: it means this does not depend on vpm.vlang.io's
 roadmap, and a vpm that can do all of this from git is still useful to people
