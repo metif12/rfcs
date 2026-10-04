@@ -152,9 +152,9 @@ installed git version against `2.36.0` to decide about shallow submodules
 
 I originally wrote that this made phase 1 "mostly wiring, not writing". **That was
 wrong, and I have since measured it.** `vlib/semver` is not the complete
-node-semver implementation it appears to be: a corpus of 100 cases measured
+node-semver implementation it appears to be: a corpus of 106 cases measured
 against the ranges grammar in
-[npm/node-semver](https://github.com/npm/node-semver) finds **20 divergences**,
+[npm/node-semver](https://github.com/npm/node-semver) finds **21 divergences**,
 several of them in the core expansion logic rather than at the edges:
 
 - a **partial version is read as an exact pin**. `'1.2'` means `=1.2.0`, not
@@ -163,8 +163,9 @@ several of them in the core expansion logic rather than at the edges:
 - **`^0.0.3` admits the whole `0.0.x` series.** `expand_caret` (`range.v:179-187`)
   increments the minor whenever the major is `0`, where node-semver increments
   the patch.
-- **`0.x` has no ceiling at all.** `expand_xrange` (`range.v:207-218`) returns a
-  bare `>=0.0.0` when the major is `0`.
+- **an x-range on a zero major has no ceiling at all.** `expand_xrange`
+  (`range.v:207-218`) returns only the floor when the major is `0`, so `0.x`,
+  `0.1.x` and `0.0.1.x` are all unbounded above. `'5.0.0'` satisfies `'0.1.x'`.
 - **a hyphen range with a bare-major upper bound does not expand.**
   `is_missing(ver_major)` is true for `'2.2 - 2'`, so `expand_hyphen` returns
   `none` and `'2.2 - 2'` matches nothing.
@@ -177,7 +178,9 @@ several of them in the core expansion logic rather than at the edges:
   `^1.0.0`, `>=0.9.0` and `*`.
 - **a range with more than two comparators is a parse failure**, and an
   unparseable range is reported as "does not satisfy". A caller cannot tell a
-  broken constraint from a genuine miss.
+  broken constraint from a genuine miss. Whitespace-only input falls into this:
+  it splits into four empty comparators and is rejected, where node-semver treats
+  it as the empty range.
 
 Two of those are landmines. `compare_gt`, `compare_ge` and `compare_le` are
 unreachable — nothing calls them — so fixing the ordering means going through
@@ -651,7 +654,7 @@ Splitting this up is not a formality — it is the main thing that makes it
 reviewable. Each phase is independently useful and independently landable.
 
 **Phase 0 — repair `vlib/semver`.**
-A corpus test against the node-semver ranges grammar now exists and records 20
+A corpus test against the node-semver ranges grammar now exists and records 21
 divergences. Fixing the ones a resolver would actually hit — partial versions read
 as exact pins, `^0.0.x`, unbounded `0.x`, the bare-major hyphen upper bound,
 prerelease ordering and prerelease admission — and deciding what an unparseable
@@ -731,7 +734,7 @@ wrong is worse than not shipping it.
 
 **`vlib/semver` becomes load-bearing and it is not ready.** I wrote that fuzzing it
 against a corpus was "a prerequisite, not a follow-up". Doing that is what turned
-up the 20 divergences listed above, so the warning was correct and understated:
+up the 21 divergences listed above, so the warning was correct and understated:
 this is the single largest piece of unplanned work in phase 1, and it lands on
 whoever picks it up. Two things make it worse than it looks. `compare_gt`,
 `compare_ge` and `compare_le` are unreachable, so the ordering fix has to go
