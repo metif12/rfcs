@@ -21,7 +21,8 @@ Concretely, this RFC proposes:
 - a resolver that picks the highest tagged version satisfying every constraint,
   and says clearly when nothing satisfies them
 - `dev_dependencies`, `dependency_overrides`, `retracted`, and `min_v`
-- `v why`, `v mod graph`, and a version-aware `v outdated`
+- `v mod graph`, and a version-aware `v outdated`
+- constraint attribution in `v why`, which shipped in #29405 without it
 
 None of that changes a compiler behaviour or an on-disk layout. There is a
 section on letting two major versions coexist via import-path suffixes, because
@@ -122,9 +123,11 @@ Concretely, four things are impossible:
 3. **Your build is not reproducible**, which #29250 fixes, but only once there
    is a resolution worth recording.
 
-4. **You cannot find out why you have the version you have.** There is no
-   `v why`. Every other ecosystem here has one — `go mod why`, `npm explain`,
-   `cargo tree --invert`, `pnpm why`, `bun why`, `dart pub deps`.
+4. **You cannot find out why you have the version you have.** `v why` landed in
+   #29405 and answers "who pulled this in", but nothing selects versions yet, so
+   it cannot say which constraint admitted the one you got. Every other ecosystem
+   here can — `go mod why`, `npm explain`, `cargo tree --invert`, `pnpm why`,
+   `bun why`, `dart pub deps`.
 
 ## Why now
 
@@ -152,10 +155,13 @@ installed git version against `2.36.0` to decide about shallow submodules
 
 I originally wrote that this made phase 1 "mostly wiring, not writing". **That was
 wrong, and I have since measured it.** `vlib/semver` is not the complete
-node-semver implementation it appears to be: a corpus of 106 cases measured
+node-semver implementation it appears to be: a corpus, now 130 cases, measured
 against the ranges grammar in
-[npm/node-semver](https://github.com/npm/node-semver) finds **21 divergences**,
-several of them in the core expansion logic rather than at the edges:
+[npm/node-semver](https://github.com/npm/node-semver), found **21 divergences**,
+several of them in the core expansion logic rather than at the edges. #29428 has
+since repaired every expansion case below; what remains is the two prerelease
+bullets and the reporting half of the last one. The bullets are kept as written,
+because the line numbers are the ones to check against:
 
 - a **partial version is read as an exact pin**. `'1.2'` means `=1.2.0`, not
   `1.2.x`, because `can_expand` (`range.v:151-154`) only looks for an explicit
@@ -180,12 +186,15 @@ several of them in the core expansion logic rather than at the edges:
   unparseable range is reported as "does not satisfy". A caller cannot tell a
   broken constraint from a genuine miss. Whitespace-only input falls into this:
   it splits into four empty comparators and is rejected, where node-semver treats
-  it as the empty range.
+  it as the empty range. #29428 removed the cap and made the empty range `*`; the
+  reporting half is still open.
 
-Two of those are landmines. `compare_gt`, `compare_ge` and `compare_le` are
-unreachable — nothing calls them — so fixing the ordering means going through
-`<`. And `semver_test.v:41` currently pins the `^0.0.1` divergence as expected
-behaviour, so repairing `expand_caret` breaks an existing test.
+Two of those are landmines. `compare_ge` and `compare_le` are unreachable —
+nothing calls them — and `compare_gt` is reachable only through `compare_ge`
+(`compare.v:36`), so fixing the ordering means going through `<`.
+`semver_test.v` pinned the `^0.0.1` divergence as expected behaviour, so
+repairing `expand_caret` broke an existing test; #29428 corrected that row rather
+than preserving it.
 
 The honest version of the claim: the range engine is a real and mostly-right
 implementation of the common forms, and reusing it still beats writing a second
@@ -378,7 +387,8 @@ myapp@0.3.1
 ```
 
 `vsl` is here because `myapp` asks for `^0.1.47`, and nothing else in the graph
-constrains it. That is the question you cannot answer today.
+constrains it. `v why` can walk the tree today, but it has no constraint to
+attribute a version to, so this is the part it cannot print yet.
 
 ## Seeing what is stale
 
@@ -620,6 +630,9 @@ which version of each name is authoritative. #29250's format — the dependency
 string as written, the resolved tag or pseudo-version, the full SHA, the clone
 source — is sufficient.
 
+Worth recording since it is now checkable rather than predicted: #29405 built
+`v why` this way, and needed no lockfile format change to do it.
+
 If it turns out not to be, the minimal change is a `deps` array per entry, which
 is exactly what `Cargo.lock` does.
 
@@ -654,19 +667,23 @@ Splitting this up is not a formality — it is the main thing that makes it
 reviewable. Each phase is independently useful and independently landable.
 
 **Phase 0 — repair `vlib/semver`.**
-A corpus test against the node-semver ranges grammar now exists and records 21
-divergences. Fixing the ones a resolver would actually hit — partial versions read
-as exact pins, `^0.0.x`, unbounded `0.x`, the bare-major hyphen upper bound,
-prerelease ordering and prerelease admission — and deciding what an unparseable
-range should report instead of a bare `false`. Small in lines, and it is a
-prerequisite rather than an improvement: every later phase picks versions with
-this code.
+A corpus test against the node-semver ranges grammar records 130 cases. It found
+21 divergences. #29428 fixed the 13 that are range expansion: partial versions
+read as exact pins, `^0.0.x`, unbounded `0.x`, the bare-major hyphen upper bound,
+and a few parse shapes. The 7 left are all prerelease — ordering, and whether a
+prerelease satisfies a range at all — which is ordering rather than expansion and
+belongs in a separate patch.
+
+Also still open: what an unparseable range should report instead of a bare
+`false`. Small in lines, and a prerequisite rather than an improvement — every
+later phase picks versions with this code.
 
 **Phase 1 — constraints and a resolver, no layout change.**
-Ranges in `v.mod`, the resolver, lock integration, `v why`, version-aware
-`v outdated`, `v update --precise`, `v mod graph`. One version per module,
-exactly as today. This is where the value is, and it needs **no compiler change
-at all** — it is entirely inside `cmd/tools/vpm/` plus phase 0.
+Ranges in `v.mod`, the resolver, lock integration, version-aware `v outdated`,
+`v update --precise`, `v mod graph`, and constraint attribution in the `v why`
+that already exists. One version per module, exactly as today. This is where the
+value is, and it needs **no compiler change at all** — it is entirely inside
+`cmd/tools/vpm/` plus phase 0.
 
 **Phase 2 — the manifest additions.**
 `dev_dependencies` (and deleting `module_deps.v`), `dependency_overrides`, `min_v`.
@@ -735,12 +752,11 @@ wrong is worse than not shipping it.
 **`vlib/semver` becomes load-bearing and it is not ready.** I wrote that fuzzing it
 against a corpus was "a prerequisite, not a follow-up". Doing that is what turned
 up the 21 divergences listed above, so the warning was correct and understated:
-this is the single largest piece of unplanned work in phase 1, and it lands on
-whoever picks it up. Two things make it worse than it looks. `compare_gt`,
-`compare_ge` and `compare_le` are unreachable, so the ordering fix has to go
-through `<` and the desugared `<=`/`>=`. And `semver_test.v:41` pins one of the
-divergences as expected behaviour, so the repair has to change an existing
-assertion — which is a discussion about intent, not a bugfix.
+this was the single largest piece of unplanned work in phase 1. #29428 has taken
+the expansion half of it; the prerelease half is still open, and it is the harder
+half. `compare_ge` and `compare_le` are unreachable and `compare_gt` only hangs
+off `compare_ge`, so the ordering fix has to go through `<` and the desugared
+`<=`/`>=`.
 
 **This does not fix name squatting.** V has no namespace isolation;
 `normalize_mod_path` (`common.v:229-231`) lowercases and maps `-` to `_`, so
