@@ -9,9 +9,10 @@ Give vpm a notion of a *dependency constraint*, and a resolver that turns
 constraints plus the available tags into one chosen version per module.
 
 This is deliberately **not** a lockfile proposal.
-[vlang/v#29250](https://github.com/vlang/v/issues/29250) is, and it already has a
-working implementation. That issue answers *"what did we resolve to, and can we
-get it back?"* — reproducibility. This RFC answers the question underneath it:
+[vlang/v#29250](https://github.com/vlang/v/issues/29250) is, and it now has an
+open implementation as [vlang/v#29439](https://github.com/vlang/v/pull/29439).
+That issue answers *"what did we resolve to, and can we get it back?"* —
+reproducibility. This RFC answers the question underneath it:
 *"what should we resolve to?"* Without that, the lockfile faithfully records an
 arbitrary choice.
 
@@ -133,10 +134,15 @@ Concretely, four things are impossible:
 
 `ROADMAP.md:81-83` has carried an unchecked "VPM / Package versioning" line for
 years. What changed recently is that the bottom half of the problem got solved
-first: #29250 and its implementation give us a place to record a resolution and a
-`--locked` mode to enforce it. It is much easier to review a resolution design
-once the recording mechanism exists, because the two can be argued about
-concretely.
+first: #29250, with its implementation now open as #29439, gives us a place to
+record a resolution and a `--locked` mode to enforce it. It is much easier to
+review a resolution design once the recording mechanism exists, because the two
+can be argued about concretely.
+
+We agreed with the author of #29250 to keep those two as separate layers rather
+than one change, so #29439 can land on its own terms. That is also the lower-risk
+order: a lockfile is useful before ranges exist, because it already pins HEAD
+installs with pseudo-versions and makes CI reproducible.
 
 There is also an unused asset, and it is the reason phase 1 looks cheaper than it
 is. `vlib/semver/range.v` is a range engine — x-ranges, `~`, `^`, hyphen ranges,
@@ -621,6 +627,12 @@ the code came from.
 
 ## Interaction with #29250
 
+#29250 is `whiter001`'s, and its implementation is now open as
+[vlang/v#29439](https://github.com/vlang/v/pull/29439). We agreed to keep the two
+as separate layers: theirs records what was chosen, this one decides what gets
+chosen, and each stands on its own without the other. This section describes
+their layer; nothing here asks them to change it.
+
 This RFC does not change the lockfile format, and that is deliberate.
 
 `v why` needs the requirement edges. It does not need them in the lockfile,
@@ -639,6 +651,17 @@ is exactly what `Cargo.lock` does.
 What this RFC *does* change about the lock: the set of versions a run may choose
 from. Under #29250 alone, the lock records a branch tip. Under this RFC it
 records a tag chosen from a range, and the SHA of that tag.
+
+Two properties of #29439 make that a change of meaning rather than of format, and
+I checked both in its diff rather than taking them on trust. Its `resolved` field
+is documented as "the selected revision: the requested tag for `@tag` installs,
+the version chosen by a resolver once version ranges exist, or a pseudo-version
+of the checkout HEAD otherwise" — so it already has room for a chosen version.
+And it never parses a version at all, which is what keeps the two layers from
+blocking each other. `--locked` compares `requested` against the dependency
+string verbatim, so an edited range is a changed string and fails, while an
+unchanged range with a satisfying locked revision passes. All range semantics
+stay in this layer.
 
 One more interaction: `--locked` in #29250 means "fail if resolution would differ
 from the lock". That definition only becomes meaningful once there is a
