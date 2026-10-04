@@ -690,16 +690,41 @@ Splitting this up is not a formality — it is the main thing that makes it
 reviewable. Each phase is independently useful and independently landable.
 
 **Phase 0 — repair `vlib/semver`.**
-A corpus test against the node-semver ranges grammar records 130 cases. It found
-21 divergences. #29428 fixed the 13 that are range expansion: partial versions
+A corpus test against the node-semver ranges grammar records 135 cases. It found
+21 divergences. #29428 fixed the 13 that were range expansion: partial versions
 read as exact pins, `^0.0.x`, unbounded `0.x`, the bare-major hyphen upper bound,
 and a few parse shapes. The 7 left are all prerelease — ordering, and whether a
 prerelease satisfies a range at all — which is ordering rather than expansion and
 belongs in a separate patch.
 
+**That count is wrong, and the reason is worth recording.** The corpus was written
+by hand from the grammar, so it only asked the questions I thought to ask. Running
+a differential fuzzer against node-semver 7.8.5 instead — 3999 generated ranges,
+seeded and reproducible — finds **194 divergences in range expansion alone**, and
+a shape matrix of `op` against an incomplete version finds 663 more across 52
+range shapes. Two families are already isolated and both reproduce unchanged on
+master:
+
+- **`expand_tilda` confuses "minor is 0" with "minor is absent".** `~2.0.0` should
+  be `>=2.0.0 <2.1.0-0`; it comes out as `<3.0.0`. Exactly 9 range shapes are
+  wrong — `~M.0`, `~M.0.0` and `~M.0.0-beta.1` for `M` in 0, 1, 2 — and the bare
+  `~2` form is correct, which is what makes it a zero/absent confusion rather than
+  a missing ceiling. This is the same mistake #29428 fixed in `expand_caret`.
+- **A comparison operator against an incomplete version gets no ceiling.** `<=0`
+  means `<1.0.0-0`; here it is read as `<=0.0.0`. 52 of the 70 such shapes
+  node-semver accepts are wrong.
+
+The reduction is not finished — minimising the 194 leaves 143 distinct shapes, so
+these two are the largest families rather than the whole of it. What the number
+does establish is the scale: **phase 0 is not a cleanup, it is the largest single
+item in this RFC by a wide margin**, and I would not have known that from the
+hand-written corpus.
+
 Also still open: what an unparseable range should report instead of a bare
-`false`. Small in lines, and a prerequisite rather than an improvement — every
-later phase picks versions with this code.
+`false`. The fuzzer makes the cost of that visible too — 882 of the generated
+cases are ranges node-semver rejects outright, and this module answers all of them
+`false`, so a caller cannot tell a broken constraint from a genuine miss. Two
+(`1.` and `1.0.0 - 2.2.`) answer `true`.
 
 **Phase 1 — constraints and a resolver, no layout change.**
 Ranges in `v.mod`, the resolver, lock integration, version-aware `v outdated`,
@@ -774,12 +799,12 @@ wrong is worse than not shipping it.
 
 **`vlib/semver` becomes load-bearing and it is not ready.** I wrote that fuzzing it
 against a corpus was "a prerequisite, not a follow-up". Doing that is what turned
-up the 21 divergences listed above, so the warning was correct and understated:
-this was the single largest piece of unplanned work in phase 1. #29428 has taken
-the expansion half of it; the prerelease half is still open, and it is the harder
-half. `compare_ge` and `compare_le` are unreachable and `compare_gt` only hangs
-off `compare_ge`, so the ordering fix has to go through `<` and the desugared
-`<=`/`>=`.
+up the 21 divergences listed above, so the warning was correct — and a
+differential fuzzer then turned up 194 more, so it was badly understated.
+This is the largest single piece of unplanned work in this RFC and the one I would
+least expect a reviewer to price correctly from reading it. #29428 has taken the
+expansion cases the hand-written corpus happened to cover; the prerelease half is
+still open, and the fuzzer shows both halves are smaller than the whole.
 
 **This does not fix name squatting.** V has no namespace isolation;
 `normalize_mod_path` (`common.v:229-231`) lowercases and maps `-` to `_`, so
