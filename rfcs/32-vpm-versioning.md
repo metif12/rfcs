@@ -192,11 +192,14 @@ because the line numbers are the ones to check against:
   unparseable range is reported as "does not satisfy". A caller cannot tell a
   broken constraint from a genuine miss. Whitespace-only input falls into this:
   it splits into four empty comparators and is rejected, where node-semver treats
-it as the empty range. #29428 removed the cap and made the empty range `*`; the
-   reporting half is still open, and #29569 did not take it — `version_satisfies`
-   still collapses `parse_range` failure to `return false`
-   (`vlib/semver/compare.v`), so a caller still cannot tell a broken constraint from
-   a genuine miss.
+it as the empty range. #29428 removed the cap and made the empty range `*`.
+
+   The reporting half is now closed too. `Version.satisfies_or_error` and
+   `is_valid_range` report an unparseable range as an error rather than as a miss, and
+   `select_version_tag` rejects a broken constraint before its loop — without which a
+   typo in a range made every tag get skipped and the user got "no semantic-version tag
+   satisfies" with no idea why. `Version.satisfies` itself still returns `false` for
+   that case, because changing it would break every caller at once.
 
 Two of those are landmines. `compare_ge` and `compare_le` are unreachable —
 nothing calls them — and `compare_gt` is reachable only through `compare_ge`
@@ -746,11 +749,12 @@ What the original number established, and what still holds, is the scale:
 item in this RFC by a wide margin**, and I would not have known that from the
 hand-written corpus.
 
-Also still open: what an unparseable range should report instead of a bare
-`false`. The fuzzer makes the cost of that visible too — 882 of the generated
-cases are ranges node-semver rejects outright, and this module answers all of them
-`false`, so a caller cannot tell a broken constraint from a genuine miss. Two
-(`1.` and `1.0.0 - 2.2.`) answer `true`.
+Also then open: what an unparseable range should report instead of a bare `false`.
+The fuzzer makes the cost of that visible too — 882 of the generated cases are ranges
+node-semver rejects outright, and this module answered all of them `false`, so a caller
+could not tell a broken constraint from a genuine miss. Two (`1.` and `1.0.0 - 2.2.`)
+answer `true`. **That is closed now**: `satisfies_or_error` and `is_valid_range`
+report it as an error, and `select_version_tag` rejects a broken constraint up front.
 
 **Phase 1 — constraints and a resolver, no layout change.**
 Ranges in `v.mod`, the resolver, lock integration, version-aware `v outdated`,
