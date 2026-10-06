@@ -801,8 +801,13 @@ because each would have sent a reader looking in the wrong file:
   `external_module_dependencies_for_tool` constant and its accessor — the install
   machinery stays.
 
-`dependency_overrides` is the only one of the three that still needs phase 1: an
-override has nothing to redirect until there is a resolver.
+`dependency_overrides` is the one of the three that phase 1 constrains, and only
+partly. The `name: version` form — force this version, regardless of what was asked —
+shipped in #29680: it is a selection, not a redirection, so it needs no graph. The
+selector forms (`vsl>c: 1.0.2`, `legacy@v3>risky: -`, `somepkg@>=2: 2.4.1`) do need
+one, because "only where vsl asks for c" and "delete that edge" are statements about
+the dependency graph, and `Parser.modules` is still a flat map. So the resolver is
+what stands between the useful half of this feature and the precise half.
 
 **Phase 3 — `retracted`.**
 Deliberately last. See the drawback below: it is the only feature here whose cost
