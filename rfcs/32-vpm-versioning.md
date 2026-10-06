@@ -808,6 +808,11 @@ The search is exponential in the worst case, which is the cost the RFC warns abo
 is bounded in practice by the number of versions a module publishes, and it stops at the
 first consistent assignment rather than searching for the best one.
 
+**`v mod graph` also landed in #29680.** It prints the dependency graph — every module
+and the modules it imports, indented by depth. Each module is printed once, at its first
+occurrence, so a diamond does not repeat a subtree. That is the difference between a
+graph and a tree, and it is why the output is not simply nested indentation.
+
 **Phase 2 — the manifest additions.**
 `dev_dependencies` (and retiring the compiler-side table), `dependency_overrides`,
 `min_v`. Still no layout change, and — corrected while implementing this — **no
