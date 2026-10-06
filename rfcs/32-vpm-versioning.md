@@ -759,6 +759,29 @@ that already exists. One version per module, exactly as today. This is where the
 value is, and it needs **no compiler change at all** — it is entirely inside
 `cmd/tools/vpm/` plus phase 0.
 
+**A first slice of this landed as #29600, and it is narrower than this section
+describes.** `v install vsl@v0.1.47` now resolves to a concrete tag: the range is
+recognised, `git ls-remote --tags` is asked for the candidates, the highest
+satisfying one is selected, and that tag is what gets installed. Three things are
+worth recording about what that is and is not:
+
+- **The range is a selection, not a constraint.** It is resolved once, at install
+  time, to a single tag. Nothing downstream knows a range was involved, so there is
+  no joint solving: `validate_range_destinations` refuses two ranges for the same
+  module outright, with "joint version-range resolution is not yet supported" as
+  the message. The RFC's phase 1 assumed ranges that survive into the lockfile and
+  get reconciled against each other; that is still unwritten.
+- **The range travels on the dependency string, not in `v.mod`.** `vsl@v0.1.47` is
+  the syntax, which is the `@` separator `parse.v` already had. Whether a range can
+  also be declared in `v.mod` is open, and the answer changes what the lockfile has
+  to record.
+- **Tag validation is stricter than the parser's.** `version_tag` round-trips the
+  core and rejects leading zeros and identifiers the module cannot represent, which
+  is a real improvement over accepting whatever a repository happens to tag.
+
+So phase 1 is started rather than outstanding, and the part that remains is the part
+the RFC actually argued was valuable: the resolver, and lock integration with it.
+
 **Phase 2 — the manifest additions.**
 `dev_dependencies` (and retiring the compiler-side table), `dependency_overrides`,
 `min_v`. Still no layout change, and — corrected while implementing this — **no
@@ -852,6 +875,11 @@ four seeds. The pricing lesson stands, though, and it is the reason phase 1 is
 proposed with its own testing plan rather than on trust: **the corpus was not a
 substitute for a differential fuzzer, and no reviewer should read a green corpus
 here as evidence about anything.**
+
+The same lesson applies to #29600, which is why its limitation is quoted rather than
+paraphrased above: a feature that resolves one range to one tag is easy to test and
+easy to believe, and the failure it cannot see is the one where two ranges for the
+same module disagree.
 
 **This does not fix name squatting.** V has no namespace isolation;
 `normalize_mod_path` (`common.v:229-231`) lowercases and maps `-` to `_`, so
