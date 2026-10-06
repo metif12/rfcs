@@ -798,6 +798,16 @@ own dependencies are not re-resolved when its version changes. That needs the gr
 walked in dependency order, and it is the step a differential fuzzer becomes necessary
 for — the property stops being checkable by enumeration once the search order matters.
 
+**Backtracking landed in #29680.** `resolve_with_backtracking` walks the modules in
+dependency order, tries each from its highest version down, and steps back to the
+previous module when a choice dead-ends. The position map is what makes it backtracking
+rather than a single pass: without it a module that fails ends the run, with it the
+previous module tries its next version.
+
+The search is exponential in the worst case, which is the cost the RFC warns about. It
+is bounded in practice by the number of versions a module publishes, and it stops at the
+first consistent assignment rather than searching for the best one.
+
 **Phase 2 — the manifest additions.**
 `dev_dependencies` (and retiring the compiler-side table), `dependency_overrides`,
 `min_v`. Still no layout change, and — corrected while implementing this — **no
