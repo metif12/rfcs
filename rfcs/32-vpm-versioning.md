@@ -786,6 +786,18 @@ worth recording about what that is and is not:
 So phase 1 is started rather than outstanding, and the part that remains is the part
 the RFC actually argued was valuable: the resolver, and lock integration with it.
 
+**The resolver's core landed in #29680.** `collect_constraints` gathers every
+constraint placed on each module, and `select_version_tag_with_constraints` picks the
+highest tag satisfying all of them — or returns an error naming the requirements that
+could not be met. Without that, a conflict between two dependents reads as "no tag
+matched" and the user has no idea why.
+
+What is still missing is the part that makes it a resolver rather than a selector:
+backtracking. Each module is resolved against the constraints on it, but a module's
+own dependencies are not re-resolved when its version changes. That needs the graph
+walked in dependency order, and it is the step a differential fuzzer becomes necessary
+for — the property stops being checkable by enumeration once the search order matters.
+
 **Phase 2 — the manifest additions.**
 `dev_dependencies` (and retiring the compiler-side table), `dependency_overrides`,
 `min_v`. Still no layout change, and — corrected while implementing this — **no
