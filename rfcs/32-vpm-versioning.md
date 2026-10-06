@@ -192,8 +192,11 @@ because the line numbers are the ones to check against:
   unparseable range is reported as "does not satisfy". A caller cannot tell a
   broken constraint from a genuine miss. Whitespace-only input falls into this:
   it splits into four empty comparators and is rejected, where node-semver treats
-  it as the empty range. #29428 removed the cap and made the empty range `*`; the
-  reporting half is still open.
+it as the empty range. #29428 removed the cap and made the empty range `*`; the
+   reporting half is still open, and #29569 did not take it — `version_satisfies`
+   still collapses `parse_range` failure to `return false`
+   (`vlib/semver/compare.v`), so a caller still cannot tell a broken constraint from
+   a genuine miss.
 
 Two of those are landmines. `compare_ge` and `compare_le` are unreachable —
 nothing calls them — and `compare_gt` is reachable only through `compare_ge`
@@ -332,9 +335,16 @@ transitive closure. If `a` depends on you, `a` does not get your `assert`.
 This is pub's rule, and it is the right one: otherwise every project that
 depends on you also depends on your test framework.
 
-It also lets us delete `vlib/v/util/module_deps.v:11-13`. `vdoc` can declare its
-own dependency on `markdown` in its `v.mod`, and the compiler's
-`check_module_is_installed` can read it from there.
+It also lets us retire `external_module_dependencies_for_tool` in
+`vlib/v/util/module_deps.v`. `vdoc` declares its own dependency on `markdown` in
+its `v.mod`, and `ensure_modules_for_tool_are_installed` reads it from there.
+
+The rest of `module_deps.v` stays. That file is 230 lines and also owns the
+clone-with-retry, the search across `VMODULES` roots, and the wait for a module
+another process is installing right now; the constant is a three-line table inside
+it. The table also doubled as the list of tools to check, so `v build-tools` now
+reads the `cmd/tools` folders instead of iterating a map — a new tool then needs no
+compiler change at all.
 
 ## Overrides
 
@@ -714,9 +724,25 @@ master:
   means `<1.0.0-0`; here it is read as `<=0.0.0`. 52 of the 70 such shapes
   node-semver accepts are wrong.
 
-The reduction is not finished — minimising the 194 leaves 143 distinct shapes, so
-these two are the largest families rather than the whole of it. What the number
-does establish is the scale: **phase 0 is not a cleanup, it is the largest single
+**Phase 0 shipped as #29569, and the numbers above were the starting point rather
+than the answer.** The two families here were 21 of the divergences; the shape matrix
+and the corpus were hiding the rest, so the 194 grew to **302** once the matrix was
+run over 6000 ranges against node-semver 7.8.5. Those 302 reduced to six root
+causes, and #29569 (per-operand expansion routing, the operator rewrite, and the
+remaining `can_expand`/tilde/hyphen/`-0` bounds) takes the differential result to
+**0 divergences across four seeds — about 16000 ranges** — with false accepts down
+from 79 to 11-13.
+
+Two things about that number are worth keeping. It is a *differential* result against
+node-semver, not a corpus one: the hand-written corpus still sits at 136 conforming
+cases and agreed with node-semver on all of them both before and after, so it could
+not have found any of the six causes. And the remaining 11-13 false accepts are
+ranges V answers `true` for that node-semver rejects — mostly unparseable input
+rather than arithmetic, which is what the 1364-in-one-seed unparseable count in the
+harness says.
+
+What the original number established, and what still holds, is the scale:
+**phase 0 is not a cleanup, it is the largest single
 item in this RFC by a wide margin**, and I would not have known that from the
 hand-written corpus.
 
@@ -734,10 +760,26 @@ value is, and it needs **no compiler change at all** — it is entirely inside
 `cmd/tools/vpm/` plus phase 0.
 
 **Phase 2 — the manifest additions.**
-`dev_dependencies` (and deleting `module_deps.v`), `dependency_overrides`, `min_v`.
-Still no layout change. The only compiler-adjacent edit is reading
-`dev_dependencies` where `vlib/v/util/module_deps.v:11-13` is currently
-hardcoded.
+`dev_dependencies` (and retiring the compiler-side table), `dependency_overrides`,
+`min_v`. Still no layout change, and — corrected while implementing this — **no
+compiler change at all**. `Manifest.unknown` is already public and already holds
+unrecognised keys as `map[string][]string`, so all three keys round-trip through the
+existing parser, a scalar `min_v` included.
+
+Two claims in the draft of this RFC were wrong here, and both are worth recording
+because each would have sent a reader looking in the wrong file:
+
+- ~~The only compiler-adjacent edit is reading `dev_dependencies` where
+  `module_deps.v` is currently hardcoded.~~ There is no such edit. I verified all
+  three keys round-trip before relying on it.
+- ~~`dev_dependencies` means deleting `module_deps.v`.~~ `module_deps.v` is 230
+  lines, not the 11 the draft cites: it also holds the clone-with-retry, the
+  module-root search, and the wait-for-a-concurrent-install. What is retired is the
+  `external_module_dependencies_for_tool` constant and its accessor — the install
+  machinery stays.
+
+`dependency_overrides` is the only one of the three that still needs phase 1: an
+override has nothing to redirect until there is a resolver.
 
 **Phase 3 — `retracted`.**
 Deliberately last. See the drawback below: it is the only feature here whose cost
@@ -797,14 +839,19 @@ people script against and file issues about. `v outdated` in particular has to
 answer "why did it *not* update", which is genuinely hard, and getting it subtly
 wrong is worse than not shipping it.
 
-**`vlib/semver` becomes load-bearing and it is not ready.** I wrote that fuzzing it
+**`vlib/semver` became load-bearing and it was not ready.** I wrote that fuzzing it
 against a corpus was "a prerequisite, not a follow-up". Doing that is what turned
-up the 21 divergences listed above, so the warning was correct — and a
-differential fuzzer then turned up 194 more, so it was badly understated.
-This is the largest single piece of unplanned work in this RFC and the one I would
-least expect a reviewer to price correctly from reading it. #29428 has taken the
-expansion cases the hand-written corpus happened to cover; the prerelease half is
-still open, and the fuzzer shows both halves are smaller than the whole.
+up the 21 divergences listed above, so the warning was correct — and a differential
+fuzzer then turned up 302 in total, so it was badly understated.
+
+This was the largest single piece of unplanned work in this RFC and the one a
+reviewer would least expect to price correctly from reading it. It is now paid for
+rather than outstanding: #29428 took the cases the hand-written corpus happened to
+cover, #29478 the prerelease ordering, and #29569 the rest, at 0 divergences over
+four seeds. The pricing lesson stands, though, and it is the reason phase 1 is
+proposed with its own testing plan rather than on trust: **the corpus was not a
+substitute for a differential fuzzer, and no reviewer should read a green corpus
+here as evidence about anything.**
 
 **This does not fix name squatting.** V has no namespace isolation;
 `normalize_mod_path` (`common.v:229-231`) lowercases and maps `-` to `_`, so
@@ -1097,12 +1144,17 @@ disagree with one, say so — that is the part I want feedback on.
    disagree with the manifest is worse than not having versions — but the warning
    period is non-negotiable, and how long it runs is a maintainer decision.
 
-8. **The compiler reads `dev_dependencies`, and `module_deps.v` goes away.**
-   `vdoc` declares its own `markdown` dependency; `check_module_is_installed` reads
-   it from the tool's `v.mod` instead of a constant. This is strictly more general
-   than the table it replaces, which is the argument. **The alternative** is
-   leaving the table alone and treating `dev_dependencies` as vpm-only, which
-   means the compiler still cannot know what a tool needs.
+8. **The compiler reads `dev_dependencies`, and the table goes away.** *(Settled: this
+   is what shipped.)* `vdoc` declares its own `markdown` dependency and
+   `ensure_modules_for_tool_are_installed` reads it from the tool's `v.mod`. This is
+   strictly more general than the table it replaces, which is the argument, and
+   `v build-tools` now scans the `cmd/tools` folders rather than iterating a map, so
+   a new tool needs no compiler change. **The alternative** was leaving the table
+   alone and treating `dev_dependencies` as vpm-only, which would mean the compiler
+   still cannot know what a tool needs.
+
+   The part that was wrong in the draft: nothing here needed a parser change, and
+   `module_deps.v` was never going to be deleted, only trimmed.
 
 9. **`retracted` is read from each candidate tag's `v.mod`, and only for
    candidates actually examined.** With a cap on how many tags are inspected, and
