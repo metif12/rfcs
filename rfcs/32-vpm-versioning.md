@@ -813,6 +813,13 @@ one, because "only where vsl asks for c" and "delete that edge" are statements a
 the dependency graph, and `Parser.modules` is still a flat map. So the resolver is
 what stands between the useful half of this feature and the precise half.
 
+**The first selector form shipped in #29680.** `vsl>c: 1.0.2` now applies only where
+vsl asks for c, using a graph built from the manifests already parsed. That graph is
+flat — one level, no transitive edges — which is all this form needs. The remaining
+two are still waiting: `legacy@v3>risky: -` needs to remove an edge rather than
+redirect one, and `somepkg@>=2: 2.4.1` needs to check a consumer's constraint against
+the version being forced.
+
 **Phase 3 — `retracted`.**
 Deliberately last. See the drawback below: it is the only feature here whose cost
 scales with the number of versions you *didn't* pick.
